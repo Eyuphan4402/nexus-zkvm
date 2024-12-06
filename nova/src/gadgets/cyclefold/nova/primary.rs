@@ -1,5 +1,4 @@
 use std::{borrow::Borrow, marker::PhantomData};
-
 use ark_crypto_primitives::sponge::constraints::AbsorbGadget;
 use ark_ec::short_weierstrass::{Projective, SWCurveConfig};
 use ark_ff::{Field, PrimeField};
@@ -15,13 +14,10 @@ use ark_relations::r1cs::{ConstraintSystemRef, Namespace, SynthesisError};
 use ark_std::fmt::Debug;
 
 use super::EmulatedFpAffineVar;
-use crate::{
-    commitment::CommitmentScheme,
-    folding::nova::cyclefold::nimfs::{R1CSInstance, RelaxedR1CSInstance},
-};
+use crate::{commitment::CommitmentScheme, folding::nova::cyclefold::nimfs::{R1CSInstance, RelaxedR1CSInstance}};
 
 #[must_use]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct R1CSInstanceVar<G1, C1>
 where
     G1: SWCurveConfig,
@@ -33,20 +29,6 @@ where
     pub X: Vec<FpVar<G1::ScalarField>>,
 
     _commitment_scheme: PhantomData<C1>,
-}
-
-impl<G1, C1> Clone for R1CSInstanceVar<G1, C1>
-where
-    G1: SWCurveConfig,
-    G1::BaseField: PrimeField,
-{
-    fn clone(&self) -> Self {
-        Self {
-            commitment_W: self.commitment_W.clone(),
-            X: self.X.clone(),
-            _commitment_scheme: self._commitment_scheme,
-        }
-    }
 }
 
 impl<G1, C1> R1CSVar<G1::ScalarField> for R1CSInstanceVar<G1, C1>
@@ -77,11 +59,7 @@ where
     G1::BaseField: PrimeField,
     C1: CommitmentScheme<Projective<G1>>,
 {
-    fn new_variable<T: Borrow<R1CSInstance<G1, C1>>>(
-        cs: impl Into<Namespace<G1::ScalarField>>,
-        f: impl FnOnce() -> Result<T, SynthesisError>,
-        mode: AllocationMode,
-    ) -> Result<Self, SynthesisError> {
+    fn new_variable<T: Borrow<R1CSInstance<G1, C1>>>(cs: impl Into<Namespace<G1::ScalarField>>, f: impl FnOnce() -> Result<T, SynthesisError>, mode: AllocationMode) -> Result<Self, SynthesisError> {
         let ns = cs.into();
         let cs = ns.cs();
 
@@ -95,9 +73,12 @@ where
             || Ok(r1cs.borrow().commitment_W.into()),
             mode,
         )?;
+
         let alloc_X = X[1..]
             .iter()
-            .map(|x| FpVar::<G1::ScalarField>::new_variable(cs.clone(), || Ok(x), mode));
+            .map(|x| FpVar::<G1::ScalarField>::new_variable(cs.clone(), || Ok(x), mode))
+            .collect::<Result<_, _>>()?;
+
         let X = std::iter::once(Ok(FpVar::constant(G1::ScalarField::ONE)))
             .chain(alloc_X)
             .collect::<Result<_, _>>()?;
@@ -121,16 +102,12 @@ where
     }
 
     fn to_sponge_field_elements(&self) -> Result<Vec<FpVar<G1::ScalarField>>, SynthesisError> {
-        Ok([
-            self.commitment_W.to_sponge_field_elements()?,
-            (&self.X[1..]).to_sponge_field_elements()?,
-        ]
-        .concat())
+        Ok([self.commitment_W.to_sponge_field_elements()?, self.X[1..].to_sponge_field_elements()?].concat())
     }
 }
 
 #[must_use]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RelaxedR1CSInstanceVar<G1, C1>
 where
     G1: SWCurveConfig,
@@ -146,37 +123,13 @@ where
     _commitment_scheme: PhantomData<C1>,
 }
 
-impl<G1, C1> Clone for RelaxedR1CSInstanceVar<G1, C1>
-where
-    G1: SWCurveConfig,
-    G1::BaseField: PrimeField,
-{
-    fn clone(&self) -> Self {
-        Self {
-            commitment_W: self.commitment_W.clone(),
-            commitment_E: self.commitment_E.clone(),
-            X: self.X.clone(),
-            _commitment_scheme: self._commitment_scheme,
-        }
-    }
-}
-
 impl<G1, C1> RelaxedR1CSInstanceVar<G1, C1>
 where
     G1: SWCurveConfig,
     G1::BaseField: PrimeField,
 {
-    pub(super) fn new(
-        commitment_W: EmulatedFpAffineVar<G1>,
-        commitment_E: EmulatedFpAffineVar<G1>,
-        X: Vec<FpVar<G1::ScalarField>>,
-    ) -> Self {
-        Self {
-            commitment_W,
-            commitment_E,
-            X,
-            _commitment_scheme: PhantomData,
-        }
+    pub(super) fn new(commitment_W: EmulatedFpAffineVar<G1>, commitment_E: EmulatedFpAffineVar<G1>, X: Vec<FpVar<G1::ScalarField>>) -> Self {
+        Self { commitment_W, commitment_E, X, _commitment_scheme: PhantomData }
     }
 }
 
@@ -199,28 +152,18 @@ where
     fn value(&self) -> Result<Self::Value, SynthesisError> {
         let commitment_W = self.commitment_W.value()?;
         let commitment_E = self.commitment_E.value()?;
-
         let X = self.X.value()?;
-        Ok(RelaxedR1CSInstance {
-            commitment_W: commitment_W.into(),
-            commitment_E: commitment_E.into(),
-            X,
-        })
+        Ok(RelaxedR1CSInstance { commitment_W: commitment_W.into(), commitment_E: commitment_E.into(), X })
     }
 }
 
-impl<G1, C1> AllocVar<RelaxedR1CSInstance<G1, C1>, G1::ScalarField>
-    for RelaxedR1CSInstanceVar<G1, C1>
+impl<G1, C1> AllocVar<RelaxedR1CSInstance<G1, C1>, G1::ScalarField> for RelaxedR1CSInstanceVar<G1, C1>
 where
     G1: SWCurveConfig,
     G1::BaseField: PrimeField,
     C1: CommitmentScheme<Projective<G1>>,
 {
-    fn new_variable<T: Borrow<RelaxedR1CSInstance<G1, C1>>>(
-        cs: impl Into<Namespace<G1::ScalarField>>,
-        f: impl FnOnce() -> Result<T, SynthesisError>,
-        mode: AllocationMode,
-    ) -> Result<Self, SynthesisError> {
+    fn new_variable<T: Borrow<RelaxedR1CSInstance<G1, C1>>>(cs: impl Into<Namespace<G1::ScalarField>>, f: impl FnOnce() -> Result<T, SynthesisError>, mode: AllocationMode) -> Result<Self, SynthesisError> {
         let ns = cs.into();
         let cs = ns.cs();
 
@@ -238,8 +181,7 @@ where
             mode,
         )?;
 
-        let X = X
-            .iter()
+        let X = X.iter()
             .map(|x| FpVar::<G1::ScalarField>::new_variable(cs.clone(), || Ok(x), mode))
             .collect::<Result<_, _>>()?;
 
@@ -272,32 +214,4 @@ where
     }
 }
 
-impl<G1, C1> CondSelectGadget<G1::ScalarField> for RelaxedR1CSInstanceVar<G1, C1>
-where
-    G1: SWCurveConfig,
-    G1::BaseField: PrimeField,
-    C1: CommitmentScheme<Projective<G1>>,
-{
-    fn conditionally_select(
-        cond: &Boolean<G1::ScalarField>,
-        true_value: &Self,
-        false_value: &Self,
-    ) -> Result<Self, SynthesisError> {
-        let commitment_W = cond.select(&true_value.commitment_W, &false_value.commitment_W)?;
-        let commitment_E = cond.select(&true_value.commitment_E, &false_value.commitment_E)?;
-
-        let X = true_value
-            .X
-            .iter()
-            .zip(&false_value.X)
-            .map(|(x1, x2)| cond.select(x1, x2))
-            .collect::<Result<_, _>>()?;
-
-        Ok(Self {
-            commitment_W,
-            commitment_E,
-            X,
-            _commitment_scheme: PhantomData,
-        })
-    }
-}
+impl<G1, C1> CondSelectGadget<G1::ScalarField> for RelaxedR1
